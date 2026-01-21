@@ -7,19 +7,28 @@ const app = express();
 /* Middlewares */
 app.use(cors());
 app.use(express.json());
-app.use(express.text({ type: "*/*" })); // sendBeacon support
+app.use(express.text({ type: "*/*" }));
 
 /* ======================
    MongoDB Connection
 ====================== */
 const MONGO_URI = process.env.MONGO_URI;
 
-mongoose.connect(MONGO_URI)
-  .then(() => console.log("✅ MongoDB connected"))
-  .catch(err => console.error("❌ MongoDB error:", err));
+let dbReady = false;
+
+mongoose.connect(MONGO_URI, {
+  serverSelectionTimeoutMS: 20000
+})
+.then(() => {
+  dbReady = true;
+  console.log("✅ MongoDB connected");
+})
+.catch(err => {
+  console.error("❌ MongoDB connection error:", err);
+});
 
 /* ======================
-   Session Schema
+   Schema
 ====================== */
 const SessionSchema = new mongoose.Schema({
   duration: Number,
@@ -36,6 +45,8 @@ const Session = mongoose.model("Session", SessionSchema);
    SAVE SESSION
 ====================== */
 app.post("/session", async (req, res) => {
+  if (!dbReady) return res.sendStatus(503);
+
   let data = req.body;
 
   if (typeof data === "string") {
@@ -67,48 +78,59 @@ app.post("/session", async (req, res) => {
    STATS ENDPOINT
 ====================== */
 app.get("/stats", async (req, res) => {
-  const totalSessions = await Session.countDocuments();
-
-  if (totalSessions === 0) {
+  if (!dbReady) {
     return res.json({
-      totalSessions: 0,
-      avgTime: 0,
-      mobile: 0,
-      desktop: 0,
-      networks: {}
+      status: "connecting",
+      message: "Database is warming up, try again in few seconds"
     });
   }
 
-  const sessions = await Session.find();
+  try {
+    const totalSessions = await Session.countDocuments();
 
-  let totalTime = 0;
-  let mobile = 0;
-  let desktop = 0;
-  let networks = {};
-
-  sessions.forEach(s => {
-    totalTime += s.duration;
-
-    if ((s.device || "").toLowerCase().includes("mobile")) {
-      mobile++;
-    } else {
-      desktop++;
+    if (totalSessions === 0) {
+      return res.json({
+        totalSessions: 0,
+        avgTime: 0,
+        mobile: 0,
+        desktop: 0,
+        networks: {}
+      });
     }
 
-    networks[s.network] = (networks[s.network] || 0) + 1;
-  });
+    const sessions = await Session.find();
 
-  res.json({
-    totalSessions,
-    avgTime: Math.round(totalTime / totalSessions),
-    mobile,
-    desktop,
-    networks
-  });
+    let totalTime = 0;
+    let mobile = 0;
+    let desktop = 0;
+    let networks = {};
+
+    sessions.forEach(s => {
+      totalTime += s.duration;
+      if ((s.device || "").toLowerCase().includes("mobile")) {
+        mobile++;
+      } else {
+        desktop++;
+      }
+      networks[s.network] = (networks[s.network] || 0) + 1;
+    });
+
+    res.json({
+      totalSessions,
+      avgTime: Math.round(totalTime / totalSessions),
+      mobile,
+      desktop,
+      networks
+    });
+
+  } catch (e) {
+    console.error("❌ Stats error:", e);
+    res.sendStatus(500);
+  }
 });
 
 /* ======================
-   ROOT CHECK
+   ROOT
 ====================== */
 app.get("/", (req, res) => {
   res.send("YOURPDF backend is running (MongoDB)");
