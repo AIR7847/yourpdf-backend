@@ -1,61 +1,75 @@
 const express = require("express");
 const cors = require("cors");
+const mongoose = require("mongoose");
 
 const app = express();
 
-/* 🔥 Middlewares */
+/* Middlewares */
 app.use(cors());
 app.use(express.json());
 app.use(express.text({ type: "*/*" })); // sendBeacon support
 
-/* 🔥 TEMP IN-MEMORY STORAGE */
-let sessions = [];
+/* ======================
+   MongoDB Connection
+====================== */
+const MONGO_URI = process.env.MONGO_URI;
+
+mongoose.connect(MONGO_URI)
+  .then(() => console.log("✅ MongoDB connected"))
+  .catch(err => console.error("❌ MongoDB error:", err));
+
+/* ======================
+   Session Schema
+====================== */
+const SessionSchema = new mongoose.Schema({
+  duration: Number,
+  device: String,
+  network: String,
+  screen: String,
+  reason: String,
+  time: { type: Date, default: Date.now }
+});
+
+const Session = mongoose.model("Session", SessionSchema);
 
 /* ======================
    SAVE SESSION
 ====================== */
-app.post("/session", (req, res) => {
+app.post("/session", async (req, res) => {
   let data = req.body;
 
-  // sendBeacon string ko JSON me badlo
   if (typeof data === "string") {
     try {
       data = JSON.parse(data);
-    } catch (e) {
-      console.error("❌ Invalid JSON");
+    } catch {
       return res.sendStatus(400);
     }
   }
 
-  const session = {
-    duration: Number(data.duration) || 0,
-    device: data.userAgent || "unknown",
-    network: data.network || "unknown",
-    screen: data.screen || "unknown",
-    reason: data.reason || "unknown",
-    time: Date.now()
-  };
+  try {
+    await Session.create({
+      duration: Number(data.duration) || 0,
+      device: data.userAgent || "unknown",
+      network: data.network || "unknown",
+      screen: data.screen || "unknown",
+      reason: data.reason || "unknown"
+    });
 
-  sessions.push(session);
-
-  console.log("📥 New session saved");
-  console.log("⏱️ Time spent (sec):", session.duration);
-  console.log("📱 Device:", session.device);
-  console.log("🖥️ Screen:", session.screen);
-  console.log("📡 Network:", session.network);
-  console.log("📌 Reason:", session.reason);
-  console.log("📊 Total sessions:", sessions.length);
-
-  res.sendStatus(200);
+    console.log("📥 Session saved to MongoDB");
+    res.sendStatus(200);
+  } catch (e) {
+    console.error("❌ Save error:", e);
+    res.sendStatus(500);
+  }
 });
 
 /* ======================
    STATS ENDPOINT
 ====================== */
-app.get("/stats", (req, res) => {
-  const total = sessions.length;
+app.get("/stats", async (req, res) => {
+  const totalSessions = await Session.countDocuments();
 
-  if (total === 0) {
+  if (totalSessions === 0) {
     return res.json({
       totalSessions: 0,
       avgTime: 0,
@@ -65,6 +79,8 @@ app.get("/stats", (req, res) => {
     });
   }
 
+  const sessions = await Session.find();
+
   let totalTime = 0;
   let mobile = 0;
   let desktop = 0;
@@ -73,7 +89,7 @@ app.get("/stats", (req, res) => {
   sessions.forEach(s => {
     totalTime += s.duration;
 
-    if (s.device.toLowerCase().includes("mobile")) {
+    if ((s.device || "").toLowerCase().includes("mobile")) {
       mobile++;
     } else {
       desktop++;
@@ -83,8 +99,8 @@ app.get("/stats", (req, res) => {
   });
 
   res.json({
-    totalSessions: total,
-    avgTime: Math.round(totalTime / total),
+    totalSessions,
+    avgTime: Math.round(totalTime / totalSessions),
     mobile,
     desktop,
     networks
@@ -95,7 +111,7 @@ app.get("/stats", (req, res) => {
    ROOT CHECK
 ====================== */
 app.get("/", (req, res) => {
-  res.send("YOURPDF backend is running");
+  res.send("YOURPDF backend is running (MongoDB)");
 });
 
 /* ======================
