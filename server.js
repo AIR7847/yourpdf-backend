@@ -1,19 +1,21 @@
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
+const fetch = require("node-fetch");
 
 const app = express();
 
-/* Middlewares */
+/* ======================
+   Middlewares
+====================== */
 app.use(cors());
 app.use(express.json());
-app.use(express.text({ type: "*/*" }));
+app.use(express.text({ type: "*/*" })); // sendBeacon support
 
 /* ======================
    MongoDB Connection
 ====================== */
 const MONGO_URI = process.env.MONGO_URI;
-
 let dbReady = false;
 
 mongoose.connect(MONGO_URI, {
@@ -36,6 +38,8 @@ const SessionSchema = new mongoose.Schema({
   network: String,
   screen: String,
   reason: String,
+  state: String,
+  isOwner: { type: Boolean, default: false },
   time: { type: Date, default: Date.now }
 });
 
@@ -48,7 +52,6 @@ app.post("/session", async (req, res) => {
   if (!dbReady) return res.sendStatus(503);
 
   let data = req.body;
-
   if (typeof data === "string") {
     try {
       data = JSON.parse(data);
@@ -57,17 +60,37 @@ app.post("/session", async (req, res) => {
     }
   }
 
+  // 🔐 Ignore owner/test sessions
+  if (data.isOwner === true) {
+    return res.sendStatus(200);
+  }
+
+  // 🌍 Get user IP
+  const ip =
+    req.headers["x-forwarded-for"]?.split(",")[0] ||
+    req.socket.remoteAddress;
+
+  let state = "Unknown";
+
+  try {
+    const geo = await fetch(`https://ipapi.co/${ip}/json/`).then(r => r.json());
+    state = geo.region || "Unknown";
+  } catch {}
+
   try {
     await Session.create({
       duration: Number(data.duration) || 0,
       device: data.userAgent || "unknown",
       network: data.network || "unknown",
       screen: data.screen || "unknown",
-      reason: data.reason || "unknown"
+      reason: data.reason || "unknown",
+      state,
+      isOwner: false
     });
 
-    console.log("📥 Session saved to MongoDB");
+    console.log("📥 Session saved | State:", state);
     res.sendStatus(200);
+
   } catch (e) {
     console.error("❌ Save error:", e);
     res.sendStatus(500);
@@ -86,7 +109,8 @@ app.get("/stats", async (req, res) => {
   }
 
   try {
-    const totalSessions = await Session.countDocuments();
+    const sessions = await Session.find({ isOwner: false });
+    const totalSessions = sessions.length;
 
     if (totalSessions === 0) {
       return res.json({
@@ -94,25 +118,28 @@ app.get("/stats", async (req, res) => {
         avgTime: 0,
         mobile: 0,
         desktop: 0,
-        networks: {}
+        networks: {},
+        states: {}
       });
     }
-
-    const sessions = await Session.find();
 
     let totalTime = 0;
     let mobile = 0;
     let desktop = 0;
     let networks = {};
+    let states = {};
 
     sessions.forEach(s => {
-      totalTime += s.duration;
+      totalTime += s.duration || 0;
+
       if ((s.device || "").toLowerCase().includes("mobile")) {
         mobile++;
       } else {
         desktop++;
       }
+
       networks[s.network] = (networks[s.network] || 0) + 1;
+      states[s.state || "Unknown"] = (states[s.state || "Unknown"] || 0) + 1;
     });
 
     res.json({
@@ -120,7 +147,8 @@ app.get("/stats", async (req, res) => {
       avgTime: Math.round(totalTime / totalSessions),
       mobile,
       desktop,
-      networks
+      networks,
+      states
     });
 
   } catch (e) {
@@ -130,16 +158,16 @@ app.get("/stats", async (req, res) => {
 });
 
 /* ======================
-   ROOT
+   ROOT (SAFE FOR RENDER)
 ====================== */
 app.get("/", (req, res) => {
-  res.send("YOURPDF backend is running (MongoDB)");
+  res.send("YOURPDF backend is running (MongoDB + State tracking)");
 });
 
 /* ======================
    START SERVER
 ====================== */
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log("🚀 Backend running on port", PORT);
 });
